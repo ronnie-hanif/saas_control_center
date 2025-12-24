@@ -78,6 +78,7 @@ enum SyncRunStatus {
 // Models
 model User {
   id                  String     @id @default(cuid())
+  oktaId              String?    @unique // Okta user ID for idempotent sync
   name                String
   email               String     @unique
   department          String
@@ -102,6 +103,7 @@ model User {
 
 model Application {
   id                  String     @id @default(cuid())
+  oktaAppId           String?    @unique // Okta app ID for idempotent sync
   name                String
   vendor              String?
   category            String
@@ -254,17 +256,19 @@ model Department {
 }
 
 model IntegrationConnection {
-  id                  String            @id @default(cuid())
-  type                IntegrationType
-  name                String
-  status              IntegrationStatus @default(pending)
-  configJson          Json?             // non-secret config (scopes, tenant id, etc.)
-  lastSyncAt          DateTime?
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
+  id                    String            @id @default(cuid())
+  type                  IntegrationType
+  name                  String
+  status                IntegrationStatus @default(pending)
+  configJson            Json?             // non-secret config (scopes, tenant id, etc.)
+  lastSyncAt            DateTime?
+  lastSuccessfulSyncAt  DateTime?         // For incremental sync
+  syncCursor            String?           // Okta pagination cursor or watermark
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   // Relations
-  syncRuns            SyncRun[]
+  syncRuns              SyncRun[]
   
   @@unique([type])
   @@map("integration_connections")
@@ -277,13 +281,20 @@ model SyncRun {
   status              SyncRunStatus  @default(running)
   startedAt           DateTime       @default(now())
   finishedAt          DateTime?
+  durationMs          Int?           // Duration in milliseconds
   recordsProcessed    Int            @default(0)
+  recordsRead         Int            @default(0)  // Total records read from source
+  recordsWritten      Int            @default(0)  // Total records written to DB
   usersCreated        Int            @default(0)
   usersUpdated        Int            @default(0)
   appsCreated         Int            @default(0)
   appsUpdated         Int            @default(0)
   accessRecordsCreated Int           @default(0)
+  accessRecordsUpdated Int           @default(0)
   errorMessage        String?
+  errorSummary        String?        // Sanitized error for UI display
+  resumeToken         String?        // For partial runs that can be resumed
+  isPartial           Boolean        @default(false)  // True if run was timeboxed
   
   @@index([connectionId])
   @@index([startedAt])

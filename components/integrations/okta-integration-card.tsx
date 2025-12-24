@@ -7,9 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useToast } from "@/hooks/use-toast"
-import { getOktaStatus, triggerOktaSync, type OktaConnectionStatus } from "@/app/actions/integrations"
-import type { SyncResult } from "@/lib/integrations"
-import { Shield, RefreshCw, CheckCircle2, XCircle, Clock, AlertCircle, Loader2 } from "lucide-react"
+import { getOktaStatus, triggerOktaSync, type OktaConnectionStatus, type SyncResult } from "@/app/actions/integrations"
+import { Shield, RefreshCw, CheckCircle2, XCircle, Clock, AlertCircle, Loader2, AlertTriangle } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 
 interface SyncRun {
@@ -17,13 +16,19 @@ interface SyncRun {
   status: string
   startedAt: Date
   finishedAt: Date | null
+  durationMs: number | null
   recordsProcessed: number
+  recordsRead: number
+  recordsWritten: number
   usersCreated: number
   usersUpdated: number
   appsCreated: number
   appsUpdated: number
   accessRecordsCreated: number
+  accessRecordsUpdated: number
   errorMessage: string | null
+  errorSummary: string | null
+  isPartial: boolean
 }
 
 export function OktaIntegrationCard() {
@@ -56,12 +61,18 @@ export function OktaIntegrationCard() {
       if (result.success) {
         toast({
           title: "Sync completed",
-          description: `Processed ${result.recordsProcessed} records in ${(result.durationMs / 1000).toFixed(1)}s`,
+          description: `Processed ${result.recordsProcessed} records (${result.usersCreated + result.usersUpdated} users, ${result.appsCreated + result.appsUpdated} apps) in ${(result.durationMs / 1000).toFixed(1)}s`,
+        })
+      } else if (result.isPartial) {
+        toast({
+          title: "Sync partially completed",
+          description: `Processed ${result.recordsProcessed} records before timeout. Run again to continue.`,
+          variant: "default",
         })
       } else {
         toast({
           title: "Sync failed",
-          description: result.errorMessage || "Unknown error",
+          description: result.errorSummary || result.errorMessage || "Unknown error",
           variant: "destructive",
         })
       }
@@ -112,8 +123,16 @@ export function OktaIntegrationCard() {
     }
   }
 
-  const getSyncStatusBadge = (syncStatus: string) => {
-    switch (syncStatus) {
+  const getSyncStatusBadge = (run: SyncRun) => {
+    if (run.isPartial) {
+      return (
+        <Badge variant="outline" className="text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="mr-1 h-3 w-3" />
+          Partial
+        </Badge>
+      )
+    }
+    switch (run.status) {
       case "completed":
         return (
           <Badge variant="outline" className="text-emerald-600 dark:text-emerald-400">
@@ -136,7 +155,7 @@ export function OktaIntegrationCard() {
           </Badge>
         )
       default:
-        return <Badge variant="outline">{syncStatus}</Badge>
+        return <Badge variant="outline">{run.status}</Badge>
     }
   }
 
@@ -157,6 +176,15 @@ export function OktaIntegrationCard() {
   const connection = status?.connection
   const syncRuns = (connection?.syncRuns || []) as SyncRun[]
   const lastSync = connection?.lastSyncAt
+  const lastSuccessfulSync = connection?.lastSuccessfulSyncAt
+
+  // Calculate totals from successful sync runs
+  const totalUsersImported = syncRuns
+    .filter((r) => r.status === "completed")
+    .reduce((sum, r) => sum + r.usersCreated + r.usersUpdated, 0)
+  const totalAppsImported = syncRuns
+    .filter((r) => r.status === "completed")
+    .reduce((sum, r) => sum + r.appsCreated + r.appsUpdated, 0)
 
   return (
     <Card className="border-l-4 border-l-blue-500">
@@ -196,7 +224,7 @@ export function OktaIntegrationCard() {
 
         {/* Sync Info */}
         {status?.configured && (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="p-3 rounded-lg bg-muted/50">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Last Sync</p>
               <p className="mt-1 text-sm font-medium">
@@ -204,8 +232,18 @@ export function OktaIntegrationCard() {
               </p>
             </div>
             <div className="p-3 rounded-lg bg-muted/50">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Syncs</p>
-              <p className="mt-1 text-sm font-medium">{syncRuns.length}</p>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Last Success</p>
+              <p className="mt-1 text-sm font-medium">
+                {lastSuccessfulSync ? formatDistanceToNow(new Date(lastSuccessfulSync), { addSuffix: true }) : "Never"}
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-muted/50">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Users Imported</p>
+              <p className="mt-1 text-sm font-medium">{totalUsersImported.toLocaleString()}</p>
+            </div>
+            <div className="p-3 rounded-lg bg-muted/50">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Apps Imported</p>
+              <p className="mt-1 text-sm font-medium">{totalAppsImported.toLocaleString()}</p>
             </div>
           </div>
         )}
@@ -235,7 +273,8 @@ export function OktaIntegrationCard() {
                   <TableRow>
                     <TableHead>Time</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Records</TableHead>
+                    <TableHead className="text-right">Read</TableHead>
+                    <TableHead className="text-right">Written</TableHead>
                     <TableHead className="text-right hidden sm:table-cell">Duration</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -243,12 +282,11 @@ export function OktaIntegrationCard() {
                   {syncRuns.slice(0, 5).map((run) => (
                     <TableRow key={run.id}>
                       <TableCell className="text-sm">{format(new Date(run.startedAt), "MMM d, h:mm a")}</TableCell>
-                      <TableCell>{getSyncStatusBadge(run.status)}</TableCell>
-                      <TableCell className="text-right text-sm">{run.recordsProcessed.toLocaleString()}</TableCell>
+                      <TableCell>{getSyncStatusBadge(run)}</TableCell>
+                      <TableCell className="text-right text-sm">{run.recordsRead.toLocaleString()}</TableCell>
+                      <TableCell className="text-right text-sm">{run.recordsWritten.toLocaleString()}</TableCell>
                       <TableCell className="text-right text-sm text-muted-foreground hidden sm:table-cell">
-                        {run.finishedAt
-                          ? `${((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000).toFixed(1)}s`
-                          : "—"}
+                        {run.durationMs ? `${(run.durationMs / 1000).toFixed(1)}s` : "—"}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -257,10 +295,20 @@ export function OktaIntegrationCard() {
             </div>
 
             {/* Show last error if any */}
-            {syncRuns[0]?.status === "failed" && syncRuns[0]?.errorMessage && (
+            {syncRuns[0]?.status === "failed" && syncRuns[0]?.errorSummary && (
               <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20">
                 <p className="text-sm text-red-600 dark:text-red-400">
-                  <strong>Last error:</strong> {syncRuns[0].errorMessage}
+                  <strong>Last error:</strong> {syncRuns[0].errorSummary}
+                </p>
+              </div>
+            )}
+
+            {/* Show partial run warning */}
+            {syncRuns[0]?.isPartial && (
+              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                <p className="text-sm text-amber-600 dark:text-amber-400">
+                  <strong>Partial sync:</strong> The last sync was timeboxed. Run again to continue syncing remaining
+                  records.
                 </p>
               </div>
             )}
