@@ -1,0 +1,291 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Enums
+enum RiskLevel {
+  low
+  medium
+  high
+  critical
+}
+
+enum AppStatus {
+  sanctioned
+  unsanctioned
+  under_review
+}
+
+enum AppSource {
+  okta
+  google
+  azure
+  manual
+  browser_extension
+}
+
+enum UserStatus {
+  active
+  inactive
+  suspended
+  offboarding
+}
+
+enum ContractStatus {
+  active
+  expiring
+  expired
+  pending
+}
+
+enum CampaignStatus {
+  active
+  completed
+  draft
+  overdue
+}
+
+enum TaskDecision {
+  pending
+  approved
+  revoked
+}
+
+enum IntegrationType {
+  okta
+  google
+  azure
+  manual
+}
+
+enum IntegrationStatus {
+  pending
+  connected
+  disconnected
+  error
+}
+
+enum SyncRunStatus {
+  running
+  completed
+  failed
+}
+
+// Models
+model User {
+  id                  String     @id @default(cuid())
+  name                String
+  email               String     @unique
+  department          String
+  title               String?
+  manager             String?
+  managerId           String?
+  status              UserStatus @default(active)
+  avatar              String?
+  startDate           DateTime?
+  lastActive          DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  // Relations
+  ownedApplications   Application[] @relation("AppOwner")
+  ownedContracts      Contract[]    @relation("ContractOwner")
+  accessDecisions     AccessReviewDecision[] @relation("DecidedBy")
+  userAccess          UserAppAccess[]
+  
+  @@map("users")
+}
+
+model Application {
+  id                  String     @id @default(cuid())
+  name                String
+  vendor              String?
+  category            String
+  description         String?
+  source              AppSource  @default(manual)
+  department          String?
+  riskLevel           RiskLevel  @default(low)
+  status              AppStatus  @default(sanctioned)
+  monthlyCost         Decimal    @default(0) @db.Decimal(10, 2)
+  annualCost          Decimal    @default(0) @db.Decimal(10, 2)
+  licensesPurchased   Int        @default(0)
+  licensesAssigned    Int        @default(0)
+  ssoConnected        Boolean    @default(false)
+  lastActivity        DateTime?
+  renewalDate         DateTime?
+  tags                String[]   @default([])
+  notes               String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  // Relations
+  ownerUserId         String?
+  owner               User?      @relation("AppOwner", fields: [ownerUserId], references: [id])
+  contracts           Contract[]
+  accessReviewDecisions AccessReviewDecision[]
+  userAccess          UserAppAccess[]
+  
+  @@map("applications")
+}
+
+model Contract {
+  id                  String         @id @default(cuid())
+  applicationId       String
+  application         Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  vendor              String
+  contractValue       Decimal        @db.Decimal(12, 2)
+  billingCadence      String         @default("annual") // monthly, quarterly, annual
+  termStart           DateTime
+  termEnd             DateTime
+  renewalDate         DateTime
+  autoRenew           Boolean        @default(false)
+  status              ContractStatus @default(active)
+  cancellationNotice  Int            @default(30) // days
+  terms               String?
+  paymentTerms        String?
+  notes               String?
+  documents           String[]       @default([])
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  // Relations
+  ownerUserId         String?
+  owner               User?          @relation("ContractOwner", fields: [ownerUserId], references: [id])
+  
+  @@map("contracts")
+}
+
+model AccessReviewCampaign {
+  id                  String         @id @default(cuid())
+  name                String
+  description         String?
+  scopeApps           String[]       @default([])
+  scopeDepartments    String[]       @default([])
+  dueDate             DateTime
+  status              CampaignStatus @default(draft)
+  reviewers           String[]       @default([])
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  // Relations
+  decisions           AccessReviewDecision[]
+  
+  @@map("access_review_campaigns")
+}
+
+model AccessReviewDecision {
+  id                  String        @id @default(cuid())
+  campaignId          String
+  campaign            AccessReviewCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  applicationId       String
+  application         Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  userId              String
+  user                User          @relation("DecidedBy", fields: [userId], references: [id], onDelete: Cascade)
+  decision            TaskDecision  @default(pending)
+  rationale           String?
+  decidedAt           DateTime?
+  decidedById         String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  
+  @@unique([campaignId, applicationId, userId])
+  @@map("access_review_decisions")
+}
+
+model UserAppAccess {
+  id                  String     @id @default(cuid())
+  userId              String
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applicationId       String
+  application         Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  accessLevel         String     @default("user") // admin, user, viewer
+  licenseType         String?
+  lastLogin           DateTime?
+  status              String     @default("active") // active, inactive
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  
+  @@unique([userId, applicationId])
+  @@map("user_app_access")
+}
+
+model AuditEvent {
+  id                  String     @id @default(cuid())
+  actor               String     // user id or "system"
+  actorEmail          String?
+  action              String     // create, update, delete, export
+  objectType          String     // user, application, contract, campaign, decision
+  objectId            String
+  objectName          String?
+  detailsJson         Json?      // additional context
+  createdAt           DateTime   @default(now())
+  
+  @@index([objectType, objectId])
+  @@index([actor])
+  @@index([createdAt])
+  @@map("audit_events")
+}
+
+model Setting {
+  id                  String     @id @default(cuid())
+  key                 String     @unique
+  value               Json
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  
+  @@map("settings")
+}
+
+model Department {
+  id                  String     @id @default(cuid())
+  name                String     @unique
+  costCenter          String?
+  annualBudget        Decimal?   @db.Decimal(12, 2)
+  managerId           String?
+  managerName         String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  
+  @@map("departments")
+}
+
+model IntegrationConnection {
+  id                  String            @id @default(cuid())
+  type                IntegrationType
+  name                String
+  status              IntegrationStatus @default(pending)
+  configJson          Json?             // non-secret config (scopes, tenant id, etc.)
+  lastSyncAt          DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  // Relations
+  syncRuns            SyncRun[]
+  
+  @@unique([type])
+  @@map("integration_connections")
+}
+
+model SyncRun {
+  id                  String         @id @default(cuid())
+  connectionId        String
+  connection          IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  status              SyncRunStatus  @default(running)
+  startedAt           DateTime       @default(now())
+  finishedAt          DateTime?
+  recordsProcessed    Int            @default(0)
+  usersCreated        Int            @default(0)
+  usersUpdated        Int            @default(0)
+  appsCreated         Int            @default(0)
+  appsUpdated         Int            @default(0)
+  accessRecordsCreated Int           @default(0)
+  errorMessage        String?
+  
+  @@index([connectionId])
+  @@index([startedAt])
+  @@map("sync_runs")
+}
