@@ -251,25 +251,56 @@ export async function runOktaSync(correlationId?: string): Promise<SyncResult> {
         startDate: oktaUser.created ? new Date(oktaUser.created) : null,
       }
 
-      // Idempotent upsert by oktaId
-      const result = await prisma.user.upsert({
+      // First, try to find existing user by oktaId or email
+      const existingByOktaId = await prisma.user.findUnique({
         where: { oktaId: oktaUser.id },
-        create: userData,
-        update: {
-          name: userData.name,
-          email: userData.email,
-          department: userData.department,
-          title: userData.title,
-          manager: userData.manager,
-          status: userData.status,
-          lastActive: userData.lastActive,
-        },
       })
+
+      const existingByEmail = await prisma.user.findUnique({
+        where: { email: email },
+      })
+
+      let result
+      let isNew = false
+
+      if (existingByOktaId) {
+        // User exists with this oktaId - update them
+        result = await prisma.user.update({
+          where: { oktaId: oktaUser.id },
+          data: {
+            name: userData.name,
+            email: userData.email,
+            department: userData.department,
+            title: userData.title,
+            manager: userData.manager,
+            status: userData.status,
+            lastActive: userData.lastActive,
+          },
+        })
+      } else if (existingByEmail) {
+        // User exists with this email but no oktaId - link them
+        result = await prisma.user.update({
+          where: { email: email },
+          data: {
+            oktaId: oktaUser.id, // Link the Okta ID
+            name: userData.name,
+            department: userData.department,
+            title: userData.title,
+            manager: userData.manager,
+            status: userData.status,
+            lastActive: userData.lastActive,
+          },
+        })
+      } else {
+        // New user - create them
+        result = await prisma.user.create({
+          data: userData,
+        })
+        isNew = true
+      }
 
       userIdMap.set(oktaUser.id, result.id)
 
-      // Check if this was a create or update by comparing createdAt and updatedAt
-      const isNew = result.createdAt.getTime() === result.updatedAt.getTime()
       if (isNew) {
         stats.usersCreated++
       } else {
